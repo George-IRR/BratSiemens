@@ -7,38 +7,45 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
 # === CONFIG ===
+USE_PI_CAMERA = False
 output_dir = "dataset_debug"
 os.makedirs(os.path.join(output_dir, "images"), exist_ok=True)
 os.makedirs(os.path.join(output_dir, "labels"), exist_ok=True)
-config_path = "threshold_config.json"
 
-# === CLASE DE FORME ===
 classes = {
     "triangle": 0, "rectangle": 1, "arch": 2,
     "half-circle": 3, "cylinder": 4, "cube": 5
 }
 
-calib = {
-    "blur": 5,
-    "threshold": 60
-}
-if os.path.exists(config_path):
-    with open(config_path, "r") as f:
-        calib.update(json.load(f))
+# Load saved settings if exists
+SETTINGS_PATH = "settings.json"
+if os.path.exists(SETTINGS_PATH):
+    with open(SETTINGS_PATH, "r") as f:
+        calib = json.load(f)
+else:
+    calib = {
+        "blur": 5,
+        "hmin": 0, "hmax": 179,
+        "smin": 0, "smax": 255,
+        "vmin": 0, "vmax": 255
+    }
 
-# === FUNCȚIE DETECȚIE ===
-def detect_shapes_and_label(frame, threshold_val, blur_val):
+def detect_shapes_and_label(frame, hsv_ranges, blur_val):
+    hmin, hmax, smin, smax, vmin, vmax = hsv_ranges
     labeled_objects = []
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blur_val = blur_val | 1  # asigură că e impar
-    blurred = cv2.GaussianBlur(gray, (blur_val, blur_val), 0)
-    _, thresh = cv2.threshold(blurred, threshold_val, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    blur_val = blur_val | 1
+    blurred = cv2.GaussianBlur(frame, (blur_val, blur_val), 0)
+    hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (hmin, smin, vmin), (hmax, smax, vmax))
+
+    contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for contour in contours:
         area = cv2.contourArea(contour)
         if area < 300:
             continue
+
         peri = cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, 0.04 * peri, True)
         vertices = len(approx)
@@ -68,7 +75,6 @@ def detect_shapes_and_label(frame, threshold_val, blur_val):
 
     return frame, labeled_objects
 
-# === SALVARE ===
 def save_frame_and_labels(frame, labels):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     img_path = os.path.join(output_dir, "images", f"{timestamp}.jpg")
@@ -79,57 +85,85 @@ def save_frame_and_labels(frame, labels):
             f.write(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
     print(f"[SALVAT] {img_path} + {label_path}")
 
-# === STREAM ===
+# === UI ===
 cap = cv2.VideoCapture(0)
-if not cap.isOpened():
-    print("[EROARE] Webcam-ul nu merge.")
+ret, frame = cap.read()
+if not ret:
+    print("[Eroare] Nu am putut accesa camera.")
     exit()
 
-# === MATPLOTLIB FIGURE + SLIDERS ===
-plt.ion()
 fig, ax = plt.subplots()
-plt.subplots_adjust(bottom=0.25)
-img_display = ax.imshow(np.zeros((480, 640, 3), dtype=np.uint8))
+plt.subplots_adjust(left=0.1, bottom=0.45)
+im = ax.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
 plt.axis("off")
+fig.canvas.manager.set_window_title("Live Debug Shape Detection")
 
-# === SLIDERS ===
-axthresh = plt.axes([0.15, 0.1, 0.65, 0.03])
-axblur = plt.axes([0.15, 0.05, 0.65, 0.03])
-sthresh = Slider(axthresh, 'Threshold', 0, 255, valinit=calib["threshold"], valstep=1)
-sblur = Slider(axblur, 'Blur', 1, 49, valinit=calib["blur"] | 1, valstep=2)
+slider_defs = {
+    "blur":     [0.1, 30, calib["blur"]],
+    "hmin":     [0, 179, calib["hmin"]],
+    "hmax":     [0, 179, calib["hmax"]],
+    "smin":     [0, 255, calib["smin"]],
+    "smax":     [0, 255, calib["smax"]],
+    "vmin":     [0, 255, calib["vmin"]],
+    "vmax":     [0, 255, calib["vmax"]],
+}
+sliders = {}
+from matplotlib.widgets import Button
+for s in sliders.values():
+    s.on_changed(update_fig)
+# === Buton "Preview Image" ===
+ax_button = plt.axes([0.4, 0.02, 0.2, 0.05])  # [x, y, width, height]
+btn = Button(ax_button, "Preview Image")
 
-frame_data = {"frame": None, "labels": []}
+def on_click(event):
+    _, frame = cap.read()
+    if frame is None: return
 
-def update_fig():
-    ret, frame = cap.read()
-    if not ret:
-        return
-    t = int(sthresh.val)
-    b = int(sblur.val)
-    processed, labels = detect_shapes_and_label(frame.copy(), t, b)
-    frame_data["frame"] = frame.copy()
-    frame_data["labels"] = labels
-    img_display.set_data(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
+    params = [int(sliders[k].val) for k in ["hmin", "hmax", "smin", "smax", "vmin", "vmax"]]
+    blur = int(sliders["blur"].val)
+    processed, _ = detect_shapes_and_label(frame.copy(), params, blur)
+    
+    path = os.path.join(output_dir, "preview.jpg")
+    cv2.imwrite(path, processed)
+    print(f"[PREVIEW] Imagine salvată în: {path}")
+
+btn.on_clicked(on_click)
+
+for i, (key, (vmin, vmax, val)) in enumerate(slider_defs.items()):
+    ax_slider = plt.axes([0.15, 0.4 - 0.04*i, 0.7, 0.03])
+    sliders[key] = Slider(ax_slider, key, vmin, vmax, valinit=val, valstep=1)
+
+def update_fig(val=None):
+    _, frame = cap.read()
+    if frame is None: return
+
+    params = [int(sliders[k].val) for k in ["hmin", "hmax", "smin", "smax", "vmin", "vmax"]]
+    blur = int(sliders["blur"].val)
+    processed, labels = detect_shapes_and_label(frame.copy(), params, blur)
+
+    im.set_data(cv2.cvtColor(processed, cv2.COLOR_BGR2RGB))
     fig.canvas.draw_idle()
 
+for s in sliders.values():
+    s.on_changed(update_fig)
+
 def on_key(event):
-    if event.key == 'c':
-        if frame_data["frame"] is not None:
-            save_frame_and_labels(frame_data["frame"], frame_data["labels"])
-    elif event.key == 'q':
-        print("[IESIRE] Salvez configurarea...")
-        with open(config_path, "w") as f:
-            json.dump({
-                "threshold": int(sthresh.val),
-                "blur": int(sblur.val)
-            }, f, indent=2)
+    if event.key == "c":
+        _, frame = cap.read()
+        params = [int(sliders[k].val) for k in ["hmin", "hmax", "smin", "smax", "vmin", "vmax"]]
+        blur = int(sliders["blur"].val)
+        processed, labels = detect_shapes_and_label(frame.copy(), params, blur)
+        save_frame_and_labels(frame, labels)
+    elif event.key == "q":
+        with open(SETTINGS_PATH, "w") as f:
+            json.dump({k: int(s.val) for k, s in sliders.items()}, f, indent=2)
         plt.close()
+        cap.release()
+        print("Ieșit și setările salvate.")
 
-fig.canvas.mpl_connect('key_press_event', on_key)
+fig.canvas.mpl_connect("key_press_event", on_key)
 
-print("[INFO] Apasă C pentru captură și Q pentru ieșire.")
-while plt.fignum_exists(fig.number):
-    update_fig()
-    plt.pause(0.01)
-
-cap.release()
+# Loop update
+import matplotlib.animation as animation
+ani = animation.FuncAnimation(fig, lambda i: update_fig(), interval=100)
+plt.show()
