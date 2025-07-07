@@ -77,25 +77,40 @@ class FlaskServer:
 
                 payload = request.get_json()
                 
+                # Verific daca e raw image
+                is_raw_image = payload.get('raw_image', False)
+                
                 # Curăț logging-ul - scap de datele mari
                 clean_payload = strip_image_data_for_log(payload)
-                #print(f"Primit: {clean_payload}")
+                
+                # Log diferit pentru raw vs processed
+                if is_raw_image:
+                    print(f"📸 RAW image primit: {clean_payload.get('crop_shape', 'unknown size')}")
+                else:
+                    detection_count = len(payload.get('detections', []))
+                    print(f"🎯 PROCESSED image primit cu {detection_count} detectii")
                 
                 # Salvez datele pentru Streamlit
                 if data_store:
                     data_store.store_data(payload)
                 
-                # Trimit prin BLE daca pot
-                if self.ble_handler:
-                    status = asyncio.run(self.ble_handler.send_data(payload))
-                    print(f"BLE: {status}")
+                # Pentru raw images, nu trimit prin BLE (nu are sens sa procesez)
+                if is_raw_image:
+                    print("📸 Raw image - nu trimit prin BLE")
+                    status = 'raw_image_received'
                 else:
-                    print("BLE nu e disponibil")
-                    status = 'no_ble'
+                    # Trimit prin BLE doar pentru imagini procesate cu detectii
+                    if self.ble_handler:
+                        status = asyncio.run(self.ble_handler.send_data(payload))
+                        print(f"BLE: {status}")
+                    else:
+                        print("BLE nu e disponibil")
+                        status = 'no_ble'
                 
                 return jsonify({
                     'status': status, 
-                    'received_count': len(payload.get('detections', []))
+                    'received_count': len(payload.get('detections', [])),
+                    'is_raw': is_raw_image
                 }), 200
             except Exception as e:
                 print(f"Eroare in receive_data: {e}")
@@ -127,6 +142,21 @@ class FlaskServer:
                 return jsonify(latest_data)
             except Exception as e:
                 print(f"Eroare in get_data: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/get_raw', methods=['GET'])
+        def get_raw_data():
+            # Pentru Streamlit sa poata lua raw images
+            try:
+                if data_store:
+                    latest_raw_data = data_store.get_latest_raw_data()
+                    if not latest_raw_data:
+                        return jsonify({'message': 'Nu am raw images', 'raw_image': False})
+                    return jsonify(latest_raw_data)
+                else:
+                    return jsonify({'error': 'Nu am data store', 'raw_image': False}), 500
+            except Exception as e:
+                print(f"Eroare in get_raw_data: {e}")
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/status', methods=['GET'])
