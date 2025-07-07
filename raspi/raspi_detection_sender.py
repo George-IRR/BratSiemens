@@ -65,7 +65,7 @@ def main():
     target = ['triangle', 'rectangle', 'arch', 'cube']
     ids = [i for i, n in model.names.items() if n in target]
     
-    print("� Starting detection with raw image support...")
+    print("Starting detection with raw image support...")
     print("Type 'raw' to toggle raw image mode")
     
     # Start command listener in background thread

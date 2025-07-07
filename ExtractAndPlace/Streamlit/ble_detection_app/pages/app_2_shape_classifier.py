@@ -85,12 +85,15 @@ def classify_shape(obj):
 shapes = ["triangle", "square", "rectangle", "pentagon", "circle", "arch", "unknown"]
 
 # Load and classify images
-files = list_pngs(obj_dir)
+files = images
 if not files:
     st.error("No PNG images found in selected run.")
     st.stop()
+
+# Create columns for display
+cols = st.columns(3)
 items = []
-for fname in files:
+for idx, fname in enumerate(files):
     img = cv2.imread(os.path.join(obj_dir, fname), cv2.IMREAD_UNCHANGED)
     rgba = cv2.cvtColor(img, cv2.COLOR_BGRA2RGBA)
     shape = classify_shape(img)
