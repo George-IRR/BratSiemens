@@ -72,6 +72,26 @@ class StreamlitUI:
             st.error(f"❌ Error fetching data: {e}")
             return {}
 
+    def fetch_raw_data(self):
+        """Fetch latest raw image data from Flask server."""
+        if not self.server_running:
+            return {}
+            
+        try:
+            response = requests.get(f"{self.flask_url}/get_raw", timeout=3)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ConnectionError:
+            st.warning("🔄 Connection lost to Flask server")
+            self.server_running = False
+            return {}
+        except requests.exceptions.Timeout:
+            st.warning("⏱️ Request timeout")
+            return {}
+        except Exception as e:
+            st.error(f"❌ Error fetching raw data: {e}")
+            return {}
+
     def display_server_status(self):
         """Display server status in sidebar."""
         with st.sidebar:
@@ -151,28 +171,57 @@ class StreamlitUI:
         with st.sidebar:
             st.header("📊 Detection Info")
             
-            detections = data.get("detections", [])
-            st.metric("Detections Count", len(detections))
+            # Check if it's raw image or processed
+            is_raw = data.get('raw_image', False)
             
-            if detections:
-                st.subheader("🎯 Detected Objects")
-                for i, det in enumerate(detections):
-                    with st.expander(f"Object {i+1}: {det.get('class', 'Unknown')}"):
-                        st.write(f"**Confidence:** {det.get('confidence', 0):.3f}")
-                        if 'center_px' in det:
-                            cx, cy = det['center_px']
-                            st.write(f"**Position:** ({cx:.0f}, {cy:.0f})")
-                        
-                        # Show class mapping
-                        class_name = det.get('class', 'Unknown')
-                        from config import CLASS_ID
-                        class_id = CLASS_ID.get(class_name, 'Unknown')
-                        st.write(f"**Class ID:** {class_id}")
-            
-            # Crop shape info
-            if 'crop_shape' in data:
-                w, h = data['crop_shape']
-                st.metric("Crop Size", f"{w}×{h}")
+            if is_raw:
+                st.info("📸 **RAW IMAGE MODE**")
+                st.write("Currently showing raw camera feed")
+                # Show image dimensions
+                if 'crop_shape' in data:
+                    w, h = data['crop_shape']
+                    st.metric("Image Size", f"{w}×{h}")
+                # Show timestamp
+                if 'timestamp' in data:
+                    st.write(f"**Timestamp:** {data['timestamp']}")
+            else:
+                # Normal detection info
+                detections = data.get("detections", [])
+                st.metric("Detections Count", len(detections))
+                
+                if detections:
+                    st.subheader("🎯 Detected Objects")
+                    for i, det in enumerate(detections):
+                        with st.expander(f"Object {i+1}: {det.get('class', 'Unknown')}"):
+                            st.write(f"**Confidence:** {det.get('confidence', 0):.3f}")
+                            if 'center_px' in det:
+                                cx, cy = det['center_px']
+                                st.write(f"**Position:** ({cx:.0f}, {cy:.0f})")
+                            
+                            # Show class mapping
+                            class_name = det.get('class', 'Unknown')
+                            from config import CLASS_ID
+                            class_id = CLASS_ID.get(class_name, 'Unknown')
+                            st.write(f"**Class ID:** {class_id}")
+                
+                # Crop shape info
+                if 'crop_shape' in data:
+                    w, h = data['crop_shape']
+                    st.metric("Crop Size", f"{w}×{h}")
+                    
+            # Always show timestamp if available
+            if 'timestamp' in data and not is_raw:
+                st.write(f"**Timestamp:** {data['timestamp']}")
+                
+            # Instructions
+            st.markdown("---")
+            st.markdown("**💡 Instructions:**")
+            if is_raw:
+                st.markdown("• Type 'raw' in Pi script to disable raw mode")
+                st.markdown("• Raw images are not processed by BLE")
+            else:
+                st.markdown("• Type 'raw' in Pi script to enable raw mode")
+                st.markdown("• Processed images are sent to BLE arm")
 
     def display_controls(self):
         """Display control panel."""
@@ -220,8 +269,19 @@ class StreamlitUI:
         
         # Main content area
         st.header("📷 Detection Display")
-        image_placeholder = st.empty()
-        status_placeholder = st.empty()
+        
+        # Create tabs for different image types
+        tab1, tab2 = st.tabs(["🎯 Processed Images", "📸 Raw Images"])
+        
+        with tab1:
+            st.subheader("Processed Images with Detections")
+            processed_placeholder = st.empty()
+            processed_status = st.empty()
+        
+        with tab2:
+            st.subheader("Raw Camera Images")
+            raw_placeholder = st.empty()
+            raw_status = st.empty()
         
         # Manual refresh or auto-refresh
         if auto_refresh and self.server_running:
@@ -232,26 +292,47 @@ class StreamlitUI:
             
             # Auto-refresh loop
             for i in range(100):  # Limit to prevent infinite loop
-                data = self.fetch_detection_data()
+                # Fetch both processed and raw data
+                processed_data = self.fetch_detection_data()
+                raw_data = self.fetch_raw_data()
                 
-                if data:
-                    # Display image
-                    img, status = self.image_processor.process_detection_data(data)
+                # Display processed images
+                if processed_data and processed_data.get('detections'):
+                    img, status = self.image_processor.process_detection_data(processed_data)
                     if img is not None:
-                        image_placeholder.image(
+                        processed_placeholder.image(
                             img, 
                             caption="Latest Detection", 
                             use_container_width=True
                         )
+                        processed_status.success(f"📊 {status}")
+                        # Display detection info in sidebar
+                        self.display_detection_info(processed_data)
                     else:
-                        image_placeholder.info("📷 Waiting for image data...")
-                    
-                    status_placeholder.info(f"📊 Status: {status}")
-                    
-                    # Display detection info in sidebar
-                    self.display_detection_info(data)
+                        processed_placeholder.info("📷 Waiting for processed image data...")
+                        processed_status.info("⏳ No processed images")
                 else:
-                    status_placeholder.warning("⏳ Waiting for detection data...")
+                    processed_placeholder.info("� Waiting for detection data...")
+                    processed_status.info("⏳ No detections available")
+                
+                # Display raw images
+                if raw_data and raw_data.get('raw_image', False):
+                    raw_img, raw_status_msg = self.image_processor.process_detection_data(raw_data)
+                    if raw_img is not None:
+                        raw_placeholder.image(
+                            raw_img, 
+                            caption="Raw Camera Feed", 
+                            use_container_width=True
+                        )
+                        raw_status.success(f"📸 {raw_status_msg}")
+                        # Display raw info in sidebar when we have raw data
+                        self.display_detection_info(raw_data)
+                    else:
+                        raw_placeholder.info("📷 No raw image data...")
+                        raw_status.info("⏳ No raw images")
+                else:
+                    raw_placeholder.info("📷 Waiting for raw images...")
+                    raw_status.info("⏳ Switch Pi to raw mode to see images here")
                 
                 # Show refresh counter
                 refresh_counter.text(f"🔄 Refresh #{i+1} - Next in {refresh_rate}s")
@@ -260,23 +341,46 @@ class StreamlitUI:
         else:
             # Manual refresh mode
             if self.server_running:
-                data = self.fetch_detection_data()
-                if data:
-                    img, status = self.image_processor.process_detection_data(data)
+                # Fetch both types of data
+                processed_data = self.fetch_detection_data()
+                raw_data = self.fetch_raw_data()
+                
+                # Display processed images
+                if processed_data and processed_data.get('detections'):
+                    img, status = self.image_processor.process_detection_data(processed_data)
                     if img is not None:
-                        image_placeholder.image(
+                        processed_placeholder.image(
                             img, 
                             caption="Latest Detection", 
                             use_container_width=True
                         )
+                        processed_status.success(f"📊 {status}")
+                        self.display_detection_info(processed_data)
                     else:
-                        image_placeholder.info("📷 No image data available")
-                    
-                    status_placeholder.info(f"📊 Status: {status}")
-                    self.display_detection_info(data)
+                        processed_placeholder.info("📷 No processed image available")
+                        processed_status.info("⏳ No processed images")
                 else:
-                    status_placeholder.info("📷 No detection data available")
-                    st.info("💡 Send some detection data to the Flask server to see results here")
+                    processed_placeholder.info("📷 No detection data available")
+                    processed_status.info("� Send detection data to Flask server")
+                
+                # Display raw images
+                if raw_data and raw_data.get('raw_image', False):
+                    raw_img, raw_status_msg = self.image_processor.process_detection_data(raw_data)
+                    if raw_img is not None:
+                        raw_placeholder.image(
+                            raw_img, 
+                            caption="Raw Camera Feed", 
+                            use_container_width=True
+                        )
+                        raw_status.success(f"📸 {raw_status_msg}")
+                        # Display raw info in sidebar when we have raw data
+                        self.display_detection_info(raw_data)
+                    else:
+                        raw_placeholder.info("📷 No raw image available")
+                        raw_status.info("⏳ No raw images")
+                else:
+                    raw_placeholder.info("📷 No raw images available")
+                    raw_status.info("💡 Type 'raw' in Pi script to enable raw mode")
             else:
                 st.warning("⚠️ Please ensure Flask server is running and try refreshing the page")
 

@@ -61,7 +61,7 @@ def command_listener():
             break
 def main():
     cropper = ArucoCropper(camera_resolution=(4608, 2592), reference_ids=[0,1,2,3])
-    model = YOLO("ModelV3.2.pt")
+    model = YOLO("ModelV3.4.pt")
     target = ['triangle', 'rectangle', 'arch', 'cube']
     ids = [i for i, n in model.names.items() if n in target]
     
